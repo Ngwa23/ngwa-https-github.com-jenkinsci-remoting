@@ -25,6 +25,7 @@ package hudson.remoting;
 
 import java.io.IOException;
 import java.io.Serializable;
+import java.time.Duration;
 import java.nio.channels.ClosedChannelException;
 import java.util.concurrent.CancellationException;
 import java.util.concurrent.ExecutionException;
@@ -35,6 +36,8 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
+import javax.annotation.CheckForNull;
+import org.jenkinsci.remoting.util.Timeout;
 
 /**
  * Request/response pattern over {@link Channel}, the layer-1 service.
@@ -42,11 +45,22 @@ import javax.annotation.Nullable;
  * <p>
  * This assumes that the receiving side has all the class definitions
  * available to de-serialize {@link Request}, just like {@link Command}.
+ * 
+ * Execution of such requests also does not happen immediately.
+ * They may be scheduled into the internal queue.
  *
  * @author Kohsuke Kawaguchi
  * @see Response
  */
 abstract class Request<RSP extends Serializable,EXC extends Throwable> extends Command {
+    
+    // TODO: use the default timeout? UserRequest, RpcRequest and Chunks seem to need different timeouts
+    @CheckForNull
+    /*package*/ static Duration DEFAULT_PERFORM_TIMEOUT = null;
+    
+    @CheckForNull
+    /*package*/ static Duration DEFAULT_EXECUTION_TIMEOUT = null;
+    
     /**
      * Executed on a remote system to perform the task.
      *
@@ -90,6 +104,16 @@ abstract class Request<RSP extends Serializable,EXC extends Throwable> extends C
      * synchronize with, before declaring the call to be complete.
      */
     /*package*/ volatile transient int responseIoId;
+    
+    //TODO: how serialization to older remoting version will work then?
+    /**
+     * Request execution timeout.
+     * This timeout wraps the {@link #perform(hudson.remoting.Channel)} call only.
+     * All other steps won't be taken into account.
+     * If the value is {@code null}, no timeout will be set.
+     */
+    @CheckForNull
+    private final Duration performTimeout;
 
     /**
      *
@@ -100,12 +124,43 @@ abstract class Request<RSP extends Serializable,EXC extends Throwable> extends C
     @Deprecated
     /*package*/ volatile transient Future<?> lastIo;
 
+    /**
+     * No-timeout constructor.
+     * 
+     * @deprecated All Request implementations are expected to use timeouts.
+     *             Use {@link #Request(java.time.Duration, java.time.Duration)}
+     */
+    @Deprecated
     protected Request() {
+        this(null, null);
+    }
+    
+    /**
+     * Constructor with a timeout.
+     * 
+     * @param executionTimeout Execution timeout, including waiting in the request queues. 
+     *                         If {@code null}, then there is no timeout
+     * @param performTimeout   Timeout of the {@link #perform(hudson.remoting.Channel) } call. 
+     *                         If {@code null}, then there is no timeout
+     * @since TODO
+     */
+    protected Request(@CheckForNull Duration performTimeout, @CheckForNull Duration executionTimeout) {
+        super(executionTimeout);
         synchronized(Request.class) {
             id = nextId++;
         }
+        this.performTimeout = performTimeout;
     }
 
+    /**
+     * Gets timeout of the {@link #perform(hudson.remoting.Channel)} command.
+     * @return timeout or {@code null} if it is not set
+     */
+    @CheckForNull
+    public Duration getPerformTimeout() {
+        return performTimeout;
+    }
+    
     /**
      * Checks if the request can be executed on the channel.
      * 
@@ -355,7 +410,10 @@ abstract class Request<RSP extends Serializable,EXC extends Throwable> extends C
                         // make sure any I/O preceding this has completed
                         channel.pipeWriter.get(lastIoId).get();
 
-                        RSP r = Request.this.perform(channel);
+                        final RSP r;
+                        try(Timeout t = Timeout.optLimit(performTimeout)) {
+                            r = Request.this.perform(channel);
+                        }
                         // normal completion
                         rsp = new Response<RSP,EXC>(id,calcLastIoId(),r);
                     } catch (Throwable t) {

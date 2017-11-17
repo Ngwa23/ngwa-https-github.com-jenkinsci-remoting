@@ -46,6 +46,7 @@ import java.io.PrintWriter;
 import java.io.UnsupportedEncodingException;
 import java.lang.ref.WeakReference;
 import java.net.URL;
+import java.time.Duration;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Date;
@@ -64,6 +65,7 @@ import java.util.logging.Level;
 import java.util.logging.LogRecord;
 import java.util.logging.Logger;
 import javax.annotation.Nullable;
+import org.jenkinsci.remoting.util.Timeout;
 import org.kohsuke.accmod.Restricted;
 import org.kohsuke.accmod.restrictions.NoExternalUse;
 
@@ -554,10 +556,10 @@ public class Channel implements VirtualChannel, IChannel, Closeable {
                 lastCommandReceivedAt = receivedAt;
                 if (logger.isLoggable(Level.FINE)) {
                     logger.fine("Received " + cmd);
-                } else if (logger.isLoggable(Level.FINER)) {
-                    logger.log(Level.FINER, "Received command " + cmd, cmd.createdAt);
                 }
-                try {
+
+                try(Timeout t = Timeout.optLimit(cmd.getExecutionTimeout())) {
+                    logger.log(Level.FINER, "Received command " + cmd, cmd.createdAt);
                     cmd.execute(Channel.this);
                     if (logger.isLoggable(Level.FINE)) {
                         logger.log(Level.FINE, "Completed command {0}. It took {1}ms", new Object[] {cmd, System.currentTimeMillis() - receivedAt});
@@ -896,6 +898,12 @@ public class Channel implements VirtualChannel, IChannel, Closeable {
      */
     public <V,T extends Throwable>
     V call(Callable<V,T> callable) throws IOException, T, InterruptedException {
+        return call(callable, UserRequest.DEFAULT_PERFORM_TIMEOUT, UserRequest.DEFAULT_EXECUTION_TIMEOUT);
+    }
+    
+    public <V,T extends Throwable>
+    V call(@Nonnull Callable<V,T> callable, @CheckForNull Duration performTimeout, @CheckForNull Duration executionTimeout) 
+            throws IOException, T, InterruptedException {
         if (isClosingOrClosed()) {
             // No reason to even try performing a user request
             throw new ChannelClosedException("Remote call on " + name + " failed. "
@@ -903,8 +911,8 @@ public class Channel implements VirtualChannel, IChannel, Closeable {
         }
         
         UserRequest<V,T> request=null;
-        try {
-            request = new UserRequest<V, T>(this, callable);
+        try(Timeout t = Timeout.optLimit(executionTimeout)) {
+            request = new UserRequest<V, T>(this, callable, performTimeout, executionTimeout);
             UserResponse<V,T> r = request.call(this);
             return r.retrieve(this, UserRequest.getClassLoader(callable));
 
