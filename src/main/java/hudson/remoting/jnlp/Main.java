@@ -77,6 +77,10 @@ public class Main {
             usage="(deprecated; now always headless)")
     public boolean headlessMode;
 
+    @Option(name = "-retry-attempts",
+            usage = "Agent connect backoff retry attempts")
+    public int retryAttempts = 20;
+
     @Option(name="-url",
             usage="Specify the Jenkins root URLs to connect to.")
     public List<URL> urls = new ArrayList<>();
@@ -305,6 +309,7 @@ public class Main {
             engine.setJarCache(new FileSystemJarCache(jarCache,true));
         engine.setNoReconnect(noReconnect);
         engine.setKeepAlive(!noKeepAlive);
+        engine.setRetryAttempts(retryAttempts);
 
         if (disableHttpsCertValidation) {
             LOGGER.log(WARNING, "Certificate validation for HTTPs endpoints is disabled");
